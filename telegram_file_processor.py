@@ -272,79 +272,38 @@ def health_check():
     })
 
 @app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    """Riceve webhook da Telegram e processa file PDF/Excel"""
+    """Riceve dati da N8N con file già scaricato"""
     try:
         data = request.get_json()
         if not data:
             raise BadRequest("No JSON data received")
         
-        logger.info(f"Webhook ricevuto: {json.dumps(data, indent=2)}")
+        # N8N invia i dati del file, non serve scaricare da Telegram
+        file_content = data.get('file_content')  # Base64 del file
+        filename = data.get('filename', 'unknown')
+        file_type = data.get('file_type', 'unknown')
         
-        # Estrae info del messaggio
-        message = data.get('message', {})
-        if not message:
-            return jsonify({'status': 'ignored', 'reason': 'no_message'})
+        if not file_content:
+            return jsonify({'status': 'error', 'error': 'No file content provided'})
         
-        # Cerca file allegato (document)
-        document = message.get('document')
-        if not document:
-            return jsonify({'status': 'ignored', 'reason': 'no_document'})
-        
-        file_id = document['file_id']
-        filename = document.get('file_name', 'unknown')
-        file_size = document.get('file_size', 0)
-        mime_type = document.get('mime_type', '')
-        
-        logger.info(f"Processing file: {filename} ({file_size} bytes, {mime_type})")
-        
-        # Verifica tipo file supportato
-        is_excel = (filename.lower().endswith(('.xlsx', '.xls')) or 
-                   'excel' in mime_type or 'spreadsheet' in mime_type)
-        is_pdf = filename.lower().endswith('.pdf') or mime_type == 'application/pdf'
-        
-        if not (is_excel or is_pdf):
-            return jsonify({
-                'status': 'ignored', 
-                'reason': 'unsupported_file_type',
-                'filename': filename,
-                'mime_type': mime_type
-            })
-        
-        # Scarica e processa il file
-        file_content, file_path = download_telegram_file(file_id)
-        
-        if is_excel:
-            processed_data = process_excel_file(file_content, filename)
-        else:  # PDF
-            processed_data = process_pdf_file(file_content, filename)
-        
-        # Aggiunge metadata Telegram
-        processed_data['telegram_info'] = {
-            'file_id': file_id,
-            'file_size': file_size,
-            'mime_type': mime_type,
-            'message_id': message.get('message_id'),
-            'chat_id': message.get('chat', {}).get('id'),
-            'user_id': message.get('from', {}).get('id'),
-            'date': message.get('date')
-        }
+        # Processa il file
+        if file_type in ['xlsx', 'xls']:
+            processed_data = process_excel_file(base64.b64decode(file_content), filename)
+        elif file_type == 'pdf':
+            processed_data = process_pdf_file(base64.b64decode(file_content), filename)
+        else:
+            return jsonify({'status': 'error', 'error': f'Unsupported file type: {file_type}'})
         
         # Invia a N8N
         send_to_n8n(processed_data)
         
-        return jsonify({
-            'status': 'processed',
-            'filename': filename,
-            'type': processed_data['type'],
-            'records_processed': len(processed_data.get('data', [])) if 'data' in processed_data else processed_data.get('tables_count', 0)
-        })
+        return jsonify({'status': 'processed'})
         
     except Exception as e:
         logger.error(f"Errore webhook handler: {e}")
-        logger.error(traceback.format_exc())
         return jsonify({'status': 'error', 'error': str(e)}), 500
-
 @app.route('/process-file', methods=['POST'])
 def process_file_endpoint():
     """Endpoint alternativo per processing diretto tramite file_id"""
