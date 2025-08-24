@@ -3,7 +3,7 @@
 Telegram File Processor - App esterna per processing PDF e Excel
 Riceve webhook da Telegram, processa file complessi, inoltra dati a N8N
 """
-
+import base64   # aggiungi in testa
 import os
 import io
 import logging
