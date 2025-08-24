@@ -274,35 +274,26 @@ def health_check():
 @app.route('/webhook', methods=['POST'])
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    """Riceve dati da N8N con file già scaricato"""
     try:
-        data = request.get_json()
-        if not data:
-            raise BadRequest("No JSON data received")
-        
-        # N8N invia i dati del file, non serve scaricare da Telegram
-        file_content = data.get('file_content')  # Base64 del file
-        filename = data.get('filename', 'unknown')
-        file_type = data.get('file_type', 'unknown')
+        # Riceve file binario diretto
+        file_content = request.get_data()
+        content_type = request.headers.get('Content-Type', '')
         
         if not file_content:
-            return jsonify({'status': 'error', 'error': 'No file content provided'})
+            return jsonify({'status': 'error', 'error': 'No file data'})
         
-        # Processa il file
-        if file_type in ['xlsx', 'xls']:
-            processed_data = process_excel_file(base64.b64decode(file_content), filename)
-        elif file_type == 'pdf':
-            processed_data = process_pdf_file(base64.b64decode(file_content), filename)
+        # Determina tipo file dall'header o content
+        if 'pdf' in content_type or file_content.startswith(b'%PDF'):
+            processed_data = process_pdf_file(file_content, 'document.pdf')
+        elif content_type.includes('excel') or file_content.startswith(b'PK'):
+            processed_data = process_excel_file(file_content, 'document.xlsx')
         else:
-            return jsonify({'status': 'error', 'error': f'Unsupported file type: {file_type}'})
+            return jsonify({'status': 'error', 'error': 'Unknown file type'})
         
-        # Invia a N8N
         send_to_n8n(processed_data)
-        
         return jsonify({'status': 'processed'})
         
     except Exception as e:
-        logger.error(f"Errore webhook handler: {e}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
 @app.route('/process-file', methods=['POST'])
 def process_file_endpoint():
