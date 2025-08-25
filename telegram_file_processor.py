@@ -307,14 +307,54 @@ def telegram_webhook():
         if len(file_content) > MAX_FILE_SIZE:
             return jsonify({'status': 'error', 'error': f'File too large: {len(file_content)} bytes'}), 413
 
-        # Determina tipo file
+        # Determina tipo file (priorità: signature binaria > estensione > content_type)
         ext = os.path.splitext(filename)[1].lower()
-        if ext in ('.pdf') or file_content.startswith(b'%PDF') or 'pdf' in content_type:
-            processed_data = process_pdf_file(file_content, filename)
-        elif ext in ('.xls', '.xlsx') or file_content.startswith(b'PK') or 'excel' in content_type or 'spreadsheet' in content_type:
+        file_type = None
+        detection_method = "unknown"
+
+        # Controlla signature binaria (magic numbers)
+        if file_content.startswith(b'PK\x03\x04'):  # XLSX (ZIP-based)
+            file_type = 'excel'
+            detection_method = "signature XLSX"
+        elif file_content.startswith(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1'):  # XLS (vecchio formato)
+            file_type = 'excel'
+            detection_method = "signature XLS"
+        elif file_content.startswith(b'%PDF'):  # PDF
+            file_type = 'pdf'
+            detection_method = "signature PDF"
+        # Override manuale se specificato nel payload JSON (es. {"file_type": "excel"})
+        elif request.is_json:
+            forced_type = request.get_json().get('file_type', '').lower()
+            if forced_type in ('excel', 'pdf'):
+                file_type = forced_type
+                detection_method = "forced by payload"
+
+        # Fallback su estensione se signature non matcha
+        if not file_type:
+            if ext in ('.xls', '.xlsx'):
+                file_type = 'excel'
+                detection_method = "estensione file"
+            elif ext == '.pdf':
+                file_type = 'pdf'
+                detection_method = "estensione file"
+
+        # Fallback su content_type come ultima risorsa
+        if not file_type:
+            if 'excel' in content_type or 'spreadsheet' in content_type:
+                file_type = 'excel'
+                detection_method = "content-type"
+            elif 'pdf' in content_type:
+                file_type = 'pdf'
+                detection_method = "content-type"
+
+        logger.info(f"Rilevato tipo file: {file_type} (metodo: {detection_method}, filename: {filename}, content_type: {content_type})")
+
+        if file_type == 'excel':
             processed_data = process_excel_file(file_content, filename)
+        elif file_type == 'pdf':
+            processed_data = process_pdf_file(file_content, filename)
         else:
-            return jsonify({'status': 'error', 'error': 'Unsupported file type'}), 400
+            return jsonify({'status': 'error', 'error': f'Unsupported file type (detection: {detection_method})'}), 400
         
         # Opzionale: Invia a N8N se specificato nel payload (es. {"send_to_n8n": true})
         if request.is_json and request.get_json().get('send_to_n8n', False):
@@ -326,7 +366,6 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"Errore webhook: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
-
 @app.route('/process-file', methods=['POST'])
 def process_file_endpoint():
     """Endpoint alternativo per processing diretto tramite file_id (da N8N)"""
