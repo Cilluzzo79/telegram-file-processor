@@ -1,1 +1,1 @@
-web: python telegram_file_processor.py
+web: gunicorn telegram_file_processor:app --bind 0.0.0.0:$PORT
