@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Telegram File Processor - App esterna per processing PDF e Excel
-Riceve webhook da Telegram, processa file complessi, inoltra dati a N8N
+Riceve webhook da Telegram o da N8N, processa file complessi, restituisce dati (opzionale: invia a N8N)
 """
-import base64   # aggiungi in testa
+import base64
 import os
 import io
 import logging
@@ -241,7 +241,7 @@ def extract_tables_from_text(text):
     return tables
 
 def send_to_n8n(processed_data):
-    """Invia i dati processati a N8N via webhook"""
+    """Invia i dati processati a N8N via webhook (opzionale)"""
     try:
         if not N8N_WEBHOOK_URL:
             raise Exception("N8N_WEBHOOK_URL non configurato")
@@ -259,7 +259,7 @@ def send_to_n8n(processed_data):
         
     except Exception as e:
         logger.error(f"Errore invio a N8N: {e}")
-        raise
+        return False  # Non raise, per non bloccare la response
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -272,32 +272,64 @@ def health_check():
     })
 
 @app.route('/webhook', methods=['POST'])
-@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
+    """Endpoint per upload diretto di file binari (PDF/XLS) da N8N o altro"""
     try:
-        # Riceve file binario diretto
-        file_content = request.get_data()
-        content_type = request.headers.get('Content-Type', '')
+        file_content = None
+        filename = 'uploaded_file'  # Default
+        content_type = request.headers.get('Content-Type', '').lower()
+
+        # Opzione 1: Upload file via form-data (es. da N8N o curl con -F)
+        if 'multipart/form-data' in content_type and 'file' in request.files:
+            uploaded_file = request.files['file']
+            filename = uploaded_file.filename or filename
+            file_content = uploaded_file.read()
+            logger.info(f"File upload via form-data: {filename}")
+
+        # Opzione 2: Raw binary (es. curl con --data-binary)
+        elif file_content is None:
+            file_content = request.get_data()
+            if request.headers.get('X-Filename'):
+                filename = request.headers.get('X-Filename')  # Opzionale: header custom per filename
+            logger.info(f"File upload raw binary: {filename}")
+
+        # Opzione 3: JSON con base64 (es. {"base64_file": "base64_string", "filename": "doc.pdf"})
+        if file_content is None and request.is_json:
+            data = request.get_json()
+            if 'base64_file' in data:
+                file_content = base64.b64decode(data['base64_file'])
+                filename = data.get('filename', filename)
+                logger.info(f"File upload via base64 JSON: {filename}")
+
+        if not file_content or len(file_content) == 0:
+            return jsonify({'status': 'error', 'error': 'No file data provided'}), 400
         
-        if not file_content:
-            return jsonify({'status': 'error', 'error': 'No file data'})
-        
-        # Determina tipo file dall'header o content
-        if 'pdf' in content_type or file_content.startswith(b'%PDF'):
-            processed_data = process_pdf_file(file_content, 'document.pdf')
-        elif content_type.includes('excel') or file_content.startswith(b'PK'):
-            processed_data = process_excel_file(file_content, 'document.xlsx')
+        if len(file_content) > MAX_FILE_SIZE:
+            return jsonify({'status': 'error', 'error': f'File too large: {len(file_content)} bytes'}), 413
+
+        # Determina tipo file
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in ('.pdf') or file_content.startswith(b'%PDF') or 'pdf' in content_type:
+            processed_data = process_pdf_file(file_content, filename)
+        elif ext in ('.xls', '.xlsx') or file_content.startswith(b'PK') or 'excel' in content_type or 'spreadsheet' in content_type:
+            processed_data = process_excel_file(file_content, filename)
         else:
-            return jsonify({'status': 'error', 'error': 'Unknown file type'})
+            return jsonify({'status': 'error', 'error': 'Unsupported file type'}), 400
         
-        send_to_n8n(processed_data)
-        return jsonify({'status': 'processed'})
+        # Opzionale: Invia a N8N se specificato nel payload (es. {"send_to_n8n": true})
+        if request.is_json and request.get_json().get('send_to_n8n', False):
+            send_to_n8n(processed_data)
+        
+        # Restituisce i dati processati (per N8N)
+        return jsonify({'status': 'processed', 'data': processed_data}), 200
         
     except Exception as e:
+        logger.error(f"Errore webhook: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
+
 @app.route('/process-file', methods=['POST'])
 def process_file_endpoint():
-    """Endpoint alternativo per processing diretto tramite file_id"""
+    """Endpoint alternativo per processing diretto tramite file_id (da N8N)"""
     try:
         data = request.get_json()
         file_id = data.get('file_id')
@@ -327,16 +359,18 @@ def process_file_endpoint():
         else:
             raise Exception(f"Tipo file non supportato: {file_type}")
         
-        # Invia a N8N
-        send_to_n8n(processed_data)
+        # Opzionale: Invia a N8N se specificato nel payload (es. {"send_to_n8n": true})
+        if data.get('send_to_n8n', False):
+            send_to_n8n(processed_data)
         
+        # Restituisce i dati processati (per N8N)
         return jsonify({
             'status': 'processed',
             'data': processed_data
-        })
+        }), 200
         
     except Exception as e:
-        logger.error(f"Errore process-file: {e}")
+        logger.error(f"Errore process-file: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
 
 if __name__ == '__main__':
