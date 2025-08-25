@@ -3,3 +3,5 @@ openpyxl==3.1.2
 PyPDF2==3.0.1
 pdfplumber==0.9.0
 requests==2.31.0
+gunicorn==21.2.0  # Per Procfile
+Werkzeug==2.3.7  # Dipendenza Flask, per BadRequest
